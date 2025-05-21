@@ -13,6 +13,6 @@ setup(
     description="A python implementation of CERTIFAI framework for machine learning models' explainability",
     url="https://github.com/alanpar97/CERTIFAI/",
     author="Alan Paredes",
-    packages="certifai",
+    packages=["certifai"],
     install_requires=req,
 )
