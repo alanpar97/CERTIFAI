@@ -6,9 +6,9 @@ Created on Mon Dec 14 10:37:55 2020
 Modified by alanpar97
 """
 import re
+import importlib
 import numpy as np
 import pandas as pd
-import torch
 import matplotlib.pyplot as plt
 from sklearn.preprocessing import LabelEncoder
 from sklearn.metrics.pairwise import manhattan_distances as L1
@@ -244,50 +244,6 @@ class CERTIFAI:
         if self.verbose:
             print(f'Constraints have been set for the input data.{self.constraints}')
 
-    def result_to_input(self, x, model_type="torch"):
-        '''Function to transform the raw input to the required format for the ML model.
-
-        Arguments:
-            x (pandas.DataFrame or numpy.ndarray): The "raw" input to be transformed.
-            model_type (str): The model type used. Options: "sklearn", "torch", "tf".
-
-        Outputs:
-            Transformed input as torch.tensor, numpy.ndarray, or pandas.DataFrame.
-        '''
-
-        # Ensure the model_type is valid
-        if model_type not in ["sklearn", "torch", "tf"]:
-            raise ValueError("model_type must be one of ['sklearn', 'torch', 'tf']")
-
-        if isinstance(x, pd.DataFrame):
-            x = x.copy()
-            model_input = x
-
-            # Apply transformations only if needed
-            if model_type in ["torch", "tf"]:
-                con, cat = self.get_con_cat_columns(x)
-                if len(cat) > 0:
-                    for feature in cat:
-                        enc = LabelEncoder()
-                        x[feature] = enc.fit_transform(x[feature])
-                model_input = x.to_numpy()  # Convert DataFrame to NumPy array
-
-        elif isinstance(x, np.ndarray):
-            model_input = x  # NumPy array remains unchanged
-        else:
-            raise ValueError("The input x must be a pandas DataFrame or a numpy array")
-
-        # Convert based on model type
-        if model_type == "sklearn":
-            if self.column_names is None:
-                return model_input.to_numpy() if isinstance(model_input, pd.DataFrame) else model_input
-            else:
-                return pd.DataFrame(data=model_input, columns=self.column_names)
-        elif model_type == "torch":
-            return torch.tensor(model_input, dtype=torch.float32)  # Convert to PyTorch tensor
-        elif model_type == "tf":
-            return model_input  # For TensorFlow, keep as NumPy array
-
     def generate_prediction(self, model, model_input, model_type="torch", classification=False):
         '''Function to output prediction from a deep learning or machine learning model.
 
@@ -306,6 +262,7 @@ class CERTIFAI:
         '''
         if classification:
             if model_type == "torch":
+                torch = importlib.import_module("torch")
                 with torch.no_grad():
                     prediction = np.argmax(model(model_input).numpy(), axis=-1)
             elif model_type == "tf":
@@ -314,6 +271,7 @@ class CERTIFAI:
                 prediction = model.predict(model_input)
         else:
             if model_type == "torch":
+                torch = importlib.import_module("torch")
                 with torch.no_grad():
                     prediction = model(model_input).numpy()
             elif model_type == "tf":
@@ -1151,3 +1109,48 @@ class CERTIFAI:
             plt.show()
 
         return results
+
+    def result_to_input(self, x, model_type="torch"):
+        '''Function to transform the raw input to the required format for the ML model.
+
+        Arguments:
+            x (pandas.DataFrame or numpy.ndarray): The "raw" input to be transformed.
+            model_type (str): The model type used. Options: "sklearn", "torch", "tf".
+
+        Outputs:
+            Transformed input as torch.tensor, numpy.ndarray, or pandas.DataFrame.
+        '''
+
+        # Ensure the model_type is valid
+        if model_type not in ["sklearn", "torch", "tf"]:
+            raise ValueError("model_type must be one of ['sklearn', 'torch', 'tf']")
+
+        if isinstance(x, pd.DataFrame):
+            x = x.copy()
+            model_input = x
+
+            # Apply transformations only if needed
+            if model_type in ["torch", "tf"]:
+                con, cat = self.get_con_cat_columns(x)
+                if len(cat) > 0:
+                    for feature in cat:
+                        enc = LabelEncoder()
+                        x[feature] = enc.fit_transform(x[feature])
+                model_input = x.to_numpy()  # Convert DataFrame to NumPy array
+
+        elif isinstance(x, np.ndarray):
+            model_input = x  # NumPy array remains unchanged
+        else:
+            raise ValueError("The input x must be a pandas DataFrame or a numpy array")
+
+        # Convert based on model type
+        if model_type == "sklearn":
+            if self.column_names is None:
+                return model_input.to_numpy() if isinstance(model_input, pd.DataFrame) else model_input
+            else:
+                return pd.DataFrame(data=model_input, columns=self.column_names)
+        elif model_type == "torch":
+            torch = importlib.import_module("torch")
+            return torch.tensor(model_input, dtype=torch.float32)  # Convert to PyTorch tensor
+        elif model_type == "tf":
+            return model_input  # For TensorFlow, keep as NumPy array
