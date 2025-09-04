@@ -772,7 +772,6 @@ class CERTIFAI:
                     fitness_dict={},
                     retain_k=final_k,
                     start=0)
-                sample["rayon Moyen"] = self.predictions[i]  # Add prediction target -- rayon Moyen is only for Vapormatt.
                 self.results.append((sample, counterfacts, list(fitness_dict.values())))
 
     def check_robustness(self, x=None, normalised=False):
