@@ -550,6 +550,7 @@ class CERTIFAI:
             x=None,
             model_input=None,
             trained_with_columns=False,
+            target_name = "target",
             model_type="torch",
             classification=False,
             target_lower=None,
@@ -586,6 +587,12 @@ class CERTIFAI:
                 on it. If nothing is provided, the model input will be automatically
                 generated for each dataset's observation (following the torch
                 argument in order to create the correct input).
+
+                trained_with_columns (bool): whether the model was trained with
+                data having column names (i.e. pandas dataframe) or not. Default
+                is False.
+
+                target_name (str): the name of the target variable in case
 
                 model_type (str): the type of model used. Options are "torch" for PyTorch,
                           "tf" for TensorFlow/Keras, and "sklearn" for Scikit-learn.
@@ -772,6 +779,7 @@ class CERTIFAI:
                     fitness_dict={},
                     retain_k=final_k,
                     start=0)
+                sample[target_name] = self.predictions[i]
                 self.results.append((sample, counterfacts, list(fitness_dict.values())))
 
     def check_robustness(self, x=None, normalised=False):
