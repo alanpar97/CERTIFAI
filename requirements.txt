@@ -1,7 +1,4 @@
 numpy
 pandas
-torch
 scikit-learn
-skimage
-tqdm
 pytorch_lightning

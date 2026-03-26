@@ -3,8 +3,7 @@ from setuptools import setup
 
 req = ["numpy",
 "pandas",
-"scikit-learn",
-"tqdm"
+"scikit-learn"
 ]
 
 setup(
