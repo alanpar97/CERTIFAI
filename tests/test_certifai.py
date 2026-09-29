@@ -3,22 +3,18 @@ Tests for the CERTIFAI state-leak bug and related behavior.
 """
 
 import numpy as np
-import pandas as pd
 import pytest
-from sklearn.ensemble import GradientBoostingClassifier
-from sklearn.datasets import make_classification
 
-from certifai.CERTIFAI import CERTIFAI
-from tests.conftest import FEATURE_NAMES, N_FEATURES
-
+from certifai.certifai import CERTIFAI
+from tests.conftest import N_FEATURES
 
 # ---------------------------------------------------------------------------
 # Test 1: Bug reproduction — fit() with trained_with_columns=True on a
 # model trained with named DataFrame columns must not raise ValueError.
 # ---------------------------------------------------------------------------
 
-class TestBugReproduction:
 
+class TestBugReproduction:
     def test_fit_trained_with_columns_no_value_error(
         self, synthetic_data, trained_sklearn_model
     ):
@@ -45,11 +41,9 @@ class TestBugReproduction:
 # Test 2: Multiple fit() calls on the same instance — no state leaks.
 # ---------------------------------------------------------------------------
 
-class TestMultipleFitCalls:
 
-    def test_repeated_fit_no_state_leak(
-        self, synthetic_data, trained_sklearn_model
-    ):
+class TestMultipleFitCalls:
+    def test_repeated_fit_no_state_leak(self, synthetic_data, trained_sklearn_model):
         X_train, _ = synthetic_data
         explainer = CERTIFAI(pandas_dataset=X_train)
         n_calls = 4
@@ -76,11 +70,9 @@ class TestMultipleFitCalls:
 # Test 3: trained_with_columns=False (numpy model)
 # ---------------------------------------------------------------------------
 
-class TestNumpyModel:
 
-    def test_fit_numpy_model_no_columns(
-        self, synthetic_data, numpy_trained_model
-    ):
+class TestNumpyModel:
+    def test_fit_numpy_model_no_columns(self, synthetic_data, numpy_trained_model):
         X_train, _ = synthetic_data
         explainer = CERTIFAI(pandas_dataset=X_train)
         explainer.fit(
@@ -102,11 +94,9 @@ class TestNumpyModel:
 # Test 4: trained_with_columns=True with explicit model_input
 # ---------------------------------------------------------------------------
 
-class TestExplicitModelInput:
 
-    def test_fit_with_explicit_model_input(
-        self, synthetic_data, trained_sklearn_model
-    ):
+class TestExplicitModelInput:
+    def test_fit_with_explicit_model_input(self, synthetic_data, trained_sklearn_model):
         X_train, _ = synthetic_data
         explainer = CERTIFAI(pandas_dataset=X_train)
         explainer.fit(
@@ -129,8 +119,8 @@ class TestExplicitModelInput:
 # Test 5: Crossover output integrity
 # ---------------------------------------------------------------------------
 
-class TestCrossoverIntegrity:
 
+class TestCrossoverIntegrity:
     def test_crossover_shape_and_values(self, synthetic_data):
         X_train, _ = synthetic_data
         explainer = CERTIFAI(pandas_dataset=X_train)
@@ -145,7 +135,9 @@ class TestCrossoverIntegrity:
 
         copy_shape = result_df.copy().to_numpy().shape
         direct_shape = result_df.to_numpy().shape
-        assert copy_shape == direct_shape, "Block corruption detected in crossover output"
+        assert copy_shape == direct_shape, (
+            "Block corruption detected in crossover output"
+        )
 
         assert not np.any(np.isnan(result_df.to_numpy().astype(float))), (
             "Crossover introduced NaN values"
@@ -156,8 +148,8 @@ class TestCrossoverIntegrity:
 # Test 6: Mutate output integrity
 # ---------------------------------------------------------------------------
 
-class TestMutateIntegrity:
 
+class TestMutateIntegrity:
     def test_mutate_preserves_feature_count(self, synthetic_data):
         X_train, _ = synthetic_data
         explainer = CERTIFAI(pandas_dataset=X_train)
@@ -178,8 +170,8 @@ class TestMutateIntegrity:
 # Test 7: Mixed dtype preservation (categorical + continuous)
 # ---------------------------------------------------------------------------
 
-class TestMixedDtypePreservation:
 
+class TestMixedDtypePreservation:
     @pytest.fixture
     def mixed_data(self):
         np.random.seed(42)

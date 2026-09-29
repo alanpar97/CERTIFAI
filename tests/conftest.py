@@ -1,9 +1,8 @@
 import numpy as np
 import pandas as pd
 import pytest
-from sklearn.ensemble import GradientBoostingClassifier
 from sklearn.datasets import make_classification
-
+from sklearn.ensemble import GradientBoostingClassifier
 
 FEATURE_NAMES = [f"feat_{i}" for i in range(6)]
 N_FEATURES = 6

@@ -1,3 +1,3 @@
-from .CERTIFAI import CERTIFAI
+from .certifai import CERTIFAI
 
-__all__ = ['CERTIFAI']
+__all__ = ["CERTIFAI"]
