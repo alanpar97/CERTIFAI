@@ -1,11 +1,10 @@
-"""
-Created on Mon Dec 14 10:37:55 2020
+"""Python implementation of the CERTIFAI counterfactual explanation framework."""
 
-@author: Iacopo
-Modified by alanpar97
-"""
+from __future__ import annotations
 
 import importlib
+import logging
+from typing import Any, Literal
 
 import numpy as np
 import pandas as pd
@@ -13,32 +12,76 @@ from sklearn.metrics.pairwise import euclidean_distances as L2
 from sklearn.metrics.pairwise import manhattan_distances as L1
 from sklearn.preprocessing import LabelEncoder
 
+logger = logging.getLogger(__name__)
+
 
 class CERTIFAI:
+    """Counterfactual explanations for black-box ML models via a genetic algorithm.
+
+    Parameters
+    ----------
+    Pm : float
+        Mutation probability for the genetic algorithm. Default is 0.2.
+    Pc : float
+        Crossover probability for the genetic algorithm. Default is 0.5.
+    dataset_path : str, optional
+        Path to a CSV file containing the training dataset.
+    numpy_dataset : numpy.ndarray, optional
+        Training dataset as a numpy array.
+    pandas_dataset : pandas.DataFrame, optional
+        Training dataset as a pandas DataFrame.
+    distance_metric : ``"L1"`` or ``"L2"``
+        Distance metric used for comparing continuous features.
+        ``"L1"`` uses Manhattan distance, ``"L2"`` uses Euclidean distance.
+        Default is ``"L1"``.
+    verbose : bool
+        If True, emit logging output during execution. Default is False.
+
+    Attributes
+    ----------
+    results : list[tuple] or None
+        After calling ``fit()``, a list of ``(sample, counterfactuals, distances)``
+        tuples — one per input sample.
+
+    Examples
+    --------
+    >>> from certifai import CERTIFAI
+    >>> explainer = CERTIFAI(pandas_dataset=X_train)
+    >>> explainer.fit(model, model_type="sklearn", classification=True)
+    >>> sample, counterfactuals, distances = explainer.results[0]
+
+    References
+    ----------
+    Sharma, S., Henderson, J., & Ghosh, J. (2020). CERTIFAI: A Common
+    Framework to Provide Explanations and Analyse the Fairness and Robustness
+    of Black-box Models. *AIES '20*. https://doi.org/10.1145/3375627.3375812
+    """
+
     def __init__(
         self,
-        Pm=0.2,
-        Pc=0.5,
-        dataset_path=None,
-        numpy_dataset=None,
-        pandas_dataset=None,
-        verbose=False,
-    ):
-        """The class instance is initialised with the probabilities needed
-        for the counterfactual generation process and an optional path leading
-        to a .csv file containing the training set. If the path is provided,
-        the class will assume in some of its method that the training set is tabular
-        in nature and pandas built-in functions will be used in several places, instead
-        of the numpy or self defined alternatives."""
+        Pm: float = 0.2,
+        Pc: float = 0.5,
+        dataset_path: str | None = None,
+        numpy_dataset: np.ndarray | None = None,
+        pandas_dataset: pd.DataFrame | None = None,
+        distance_metric: Literal["L1", "L2"] = "L1",
+        verbose: bool = False,
+    ) -> None:
 
-        self.column_names = None
+        if distance_metric not in ("L1", "L2"):
+            raise ValueError(
+                f"distance_metric must be 'L1' or 'L2', got {distance_metric!r}"
+            )
+
+        self.column_names: pd.Index | None = None
         self.Pm = Pm
         self.Pc = Pc
-        self.Population = None
-        self.distance = None
-        self.constraints = None
-        self.predictions = None
-        self.results = None
+        self.Population: int | None = None
+        self.distance: Any = None
+        self.distance_metric: Literal["L1", "L2"] = distance_metric
+        self.constraints: list[Any] | None = None
+        self.predictions: np.ndarray | None = None
+        self.results: list[tuple[pd.DataFrame, list[list[Any]], list[Any]]] | None = None
         self.verbose = verbose
 
         if dataset_path is not None:
@@ -53,7 +96,7 @@ class CERTIFAI:
             self.tab_dataset = None
 
     @classmethod
-    def from_csv(cls, path):
+    def from_csv(cls, path: str) -> CERTIFAI:
         return cls(dataset_path=path)
 
     def get_con_cat_columns(self, x):
@@ -74,7 +117,14 @@ class CERTIFAI:
 
         return con, cat
 
-    def tabular_distance(self, x, y, continuous_distance="L1", con=None, cat=None):
+    def tabular_distance(
+        self,
+        x: pd.DataFrame,
+        y: pd.DataFrame | np.ndarray,
+        continuous_distance: Literal["L1", "L2"] | None = None,
+        con: list[str] | None = None,
+        cat: list[str] | None = None,
+    ) -> np.ndarray:
         """Distance function for tabular data, as described in the original
         paper. This function is the default one for tabular data in the paper and
         in the set_distance function below as well. For this function to be used,
@@ -104,6 +154,9 @@ class CERTIFAI:
                 "This distance can be used only if input is a row of a pandas dataframe at the moment."
             )
 
+        if continuous_distance is None:
+            continuous_distance = self.distance_metric
+
         if not isinstance(y, pd.DataFrame):
             y = pd.DataFrame(y, columns=x.columns.tolist())
         else:
@@ -130,25 +183,24 @@ class CERTIFAI:
             + len(cat) / x.shape[-1] * cat_distance
         )
 
-    def set_distance(self, kind="automatic", x=None):
+    def set_distance(
+        self,
+        kind: str = "automatic",
+        x: pd.DataFrame | np.ndarray | None = None,
+    ) -> None:
         """Set the distance function to be used in counterfactual generation.
-        The distance function can either be manually chosen by passing the
-        relative value to the kind argument or it can be inferred by passing the
-        'automatic' value.
 
-        Arguments:
-            Inputs:
-                kind (string): possible values, representing the different
-                distance functions are: 'automatic', 'L1', 'L2' and 'euclidean' (same as L2)
-
-                x (numpy.ndarray or pandas.DataFrame): training set or a sample from it on the basis
-                of which the function will decide what distance function to use if kind=='automatic'.
-                If the training set is a .csv file then
-                the function more suitable for tabular data will be used, otherwise the function
-                will backoff to using L1 norm distance.
-
-        Outputs:
-            None, set the distance attribute as described above."""
+        Parameters
+        ----------
+        kind : str
+            One of ``"automatic"``, ``"L1"``, ``"L2"``, ``"euclidean"``
+            (same as L2), or ``"tab_distance"``.
+        x : pandas.DataFrame or numpy.ndarray, optional
+            Training data used by ``"automatic"`` to decide whether to use
+            the tabular distance (when categorical columns are present) or
+            a simple pairwise distance.
+        """
+        _metric_fn = L1 if self.distance_metric == "L1" else L2
 
         if kind == "automatic":
             if x is None and self.tab_dataset is None:
@@ -164,7 +216,7 @@ class CERTIFAI:
                 if len(cat) > 0:
                     self.distance = self.tabular_distance
                 else:
-                    self.distance = L1
+                    self.distance = _metric_fn
 
         elif kind == "tab_distance":
             self.distance = self.tabular_distance
@@ -174,11 +226,11 @@ class CERTIFAI:
             self.distance = L2
         else:
             raise ValueError(
-                "Distance function specified not recognised:\
-                             use one of automatic, L1, L2 or euclidean."
+                "Distance function specified not recognised:"
+                " use one of automatic, L1, L2 or euclidean."
             )
 
-    def set_population(self, x=None):
+    def set_population(self, x: pd.DataFrame | np.ndarray | None = None) -> None:
         """Set the population limit (i.e. number of counterfactuals created at each generation).
         following the original paper, we define the maximum population as the minum between the squared number of features
         to be generated and 30000.
@@ -205,7 +257,11 @@ class CERTIFAI:
         else:
             self.Population = min(x.shape[-1] ** 2, 30000)
 
-    def set_constraints(self, x=None, fixed=None):
+    def set_constraints(
+        self,
+        x: pd.DataFrame | np.ndarray | None = None,
+        fixed: list[str | int] | None = None,
+    ) -> None:
         """Set the list of constraints for each input feature, whereas
         each constraint consist in the minimum and maximum value for
         the given continuous feature. If a categorical feature is encountered,
@@ -262,7 +318,7 @@ class CERTIFAI:
                 else:
                     self.constraints.append((min(x[:, i]), max(x[:, i])))
         if self.verbose:
-            print(f"Constraints have been set for the input data.{self.constraints}")
+            logger.info("Constraints have been set for the input data: %s", self.constraints)
 
     def generate_prediction(
         self, model, model_input, model_type="torch", classification=False
@@ -587,26 +643,26 @@ class CERTIFAI:
 
     def fit(
         self,
-        model,
-        x=None,
-        model_input=None,
-        trained_with_columns=False,
-        target_name="target",
-        model_type="torch",
-        classification=False,
-        target_lower=None,
-        target_upper=None,
-        generations=3,
-        distance="automatic",
-        constrained=True,
-        class_specific=None,
-        select_retain=1000,
-        gen_retain=500,
-        final_k=1,
-        normalisation=None,
-        fixed=None,
-        verbose=False,
-    ):
+        model: Any,
+        x: pd.DataFrame | np.ndarray | None = None,
+        model_input: Any = None,
+        trained_with_columns: bool = False,
+        target_name: str = "target",
+        model_type: Literal["torch", "tf", "sklearn"] = "torch",
+        classification: bool = False,
+        target_lower: pd.Series | np.ndarray | None = None,
+        target_upper: pd.Series | np.ndarray | None = None,
+        generations: int = 3,
+        distance: str = "automatic",
+        constrained: bool = True,
+        class_specific: int | None = None,
+        select_retain: int = 1000,
+        gen_retain: int = 500,
+        final_k: int = 1,
+        normalisation: Literal["standard", "max_scaler"] | None = None,
+        fixed: list[str | int] | None = None,
+        verbose: bool = False,
+    ) -> None:
         """Generate the counterfactuals for the defined dataset under the
         trained model.
 
@@ -856,7 +912,11 @@ class CERTIFAI:
                 counterfacts = [cf[:-1] for cf in counterfacts]
                 self.results.append((sample, counterfacts, prediction_targets))
 
-    def result_to_input(self, x, model_type="torch"):
+    def result_to_input(
+        self,
+        x: pd.DataFrame | np.ndarray,
+        model_type: Literal["torch", "tf", "sklearn"] = "torch",
+    ) -> Any:
         """Function to transform the raw input to the required format for the ML model.
 
         Arguments:
