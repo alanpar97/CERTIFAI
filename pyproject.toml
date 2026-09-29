@@ -31,6 +31,9 @@ dependencies = [
     "scikit-learn>=1.3.2",
 ]
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/certifai"]
+
 [project.urls]
 Repository = "https://github.com/alanpar97/CERTIFAI"
 
