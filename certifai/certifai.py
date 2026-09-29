@@ -1,36 +1,87 @@
-# -*- coding: utf-8 -*-
-"""
-Created on Mon Dec 14 10:37:55 2020
+"""Python implementation of the CERTIFAI counterfactual explanation framework."""
 
-@author: Iacopo
-Modified by alanpar97
-"""
+from __future__ import annotations
+
 import importlib
+import logging
+from typing import Any, Literal
+
 import numpy as np
 import pandas as pd
-from sklearn.preprocessing import LabelEncoder
-from sklearn.metrics.pairwise import manhattan_distances as L1
 from sklearn.metrics.pairwise import euclidean_distances as L2
+from sklearn.metrics.pairwise import manhattan_distances as L1
+from sklearn.preprocessing import LabelEncoder
+
+logger = logging.getLogger(__name__)
 
 
 class CERTIFAI:
-    def __init__(self, Pm=.2, Pc=.5, dataset_path=None,
-                 numpy_dataset=None, pandas_dataset=None, verbose=False):
-        """The class instance is initialised with the probabilities needed
-        for the counterfactual generation process and an optional path leading
-        to a .csv file containing the training set. If the path is provided,
-        the class will assume in some of its method that the training set is tabular
-        in nature and pandas built-in functions will be used in several places, instead
-        of the numpy or self defined alternatives."""
+    """Counterfactual explanations for black-box ML models via a genetic algorithm.
 
-        self.column_names = None
+    Parameters
+    ----------
+    Pm : float
+        Mutation probability for the genetic algorithm. Default is 0.2.
+    Pc : float
+        Crossover probability for the genetic algorithm. Default is 0.5.
+    dataset_path : str, optional
+        Path to a CSV file containing the training dataset.
+    numpy_dataset : numpy.ndarray, optional
+        Training dataset as a numpy array.
+    pandas_dataset : pandas.DataFrame, optional
+        Training dataset as a pandas DataFrame.
+    distance_metric : ``"L1"`` or ``"L2"``
+        Distance metric used for comparing continuous features.
+        ``"L1"`` uses Manhattan distance, ``"L2"`` uses Euclidean distance.
+        Default is ``"L1"``.
+    verbose : bool
+        If True, emit logging output during execution. Default is False.
+
+    Attributes
+    ----------
+    results : list[tuple] or None
+        After calling ``fit()``, a list of ``(sample, counterfactuals, distances)``
+        tuples — one per input sample.
+
+    Examples
+    --------
+    >>> from certifai import CERTIFAI
+    >>> explainer = CERTIFAI(pandas_dataset=X_train)
+    >>> explainer.fit(model, model_type="sklearn", classification=True)
+    >>> sample, counterfactuals, distances = explainer.results[0]
+
+    References
+    ----------
+    Sharma, S., Henderson, J., & Ghosh, J. (2020). CERTIFAI: A Common
+    Framework to Provide Explanations and Analyse the Fairness and Robustness
+    of Black-box Models. *AIES '20*. https://doi.org/10.1145/3375627.3375812
+    """
+
+    def __init__(
+        self,
+        Pm: float = 0.2,
+        Pc: float = 0.5,
+        dataset_path: str | None = None,
+        numpy_dataset: np.ndarray | None = None,
+        pandas_dataset: pd.DataFrame | None = None,
+        distance_metric: Literal["L1", "L2"] = "L1",
+        verbose: bool = False,
+    ) -> None:
+
+        if distance_metric not in ("L1", "L2"):
+            raise ValueError(
+                f"distance_metric must be 'L1' or 'L2', got {distance_metric!r}"
+            )
+
+        self.column_names: pd.Index | None = None
         self.Pm = Pm
         self.Pc = Pc
-        self.Population = None
-        self.distance = None
-        self.constraints = None
-        self.predictions = None
-        self.results = None
+        self.Population: int | None = None
+        self.distance: Any = None
+        self.distance_metric: Literal["L1", "L2"] = distance_metric
+        self.constraints: list[Any] | None = None
+        self.predictions: np.ndarray | None = None
+        self.results: list[tuple[pd.DataFrame, list[list[Any]], list[Any]]] | None = None
         self.verbose = verbose
 
         if dataset_path is not None:
@@ -45,27 +96,35 @@ class CERTIFAI:
             self.tab_dataset = None
 
     @classmethod
-    def from_csv(cls, path):
+    def from_csv(cls, path: str) -> CERTIFAI:
         return cls(dataset_path=path)
 
     def get_con_cat_columns(self, x):
 
-        assert isinstance(x, pd.DataFrame), 'This method can be used only if input\
-            is an instance of pandas dataframe at the moment.'
+        if not isinstance(x, pd.DataFrame):
+            raise TypeError(
+                "This method can be used only if input is an instance of pandas dataframe at the moment."
+            )
 
         con = []
         cat = []
 
         for column in x:
-            if x[column].dtype == 'O':
+            if x[column].dtype == "O":
                 cat.append(column)
             else:
                 con.append(column)
 
         return con, cat
 
-    def tabular_distance(self, x, y, continuous_distance='L1', con=None,
-                     cat=None):
+    def tabular_distance(
+        self,
+        x: pd.DataFrame,
+        y: pd.DataFrame | np.ndarray,
+        continuous_distance: Literal["L1", "L2"] | None = None,
+        con: list[str] | None = None,
+        cat: list[str] | None = None,
+    ) -> np.ndarray:
         """Distance function for tabular data, as described in the original
         paper. This function is the default one for tabular data in the paper and
         in the set_distance function below as well. For this function to be used,
@@ -90,8 +149,13 @@ class CERTIFAI:
             cat (list): list of the categorical features (i.e. columns) names
         """
 
-        assert isinstance(x, pd.DataFrame), 'This distance can be used only if input\
-            is a row of a pandas dataframe at the moment.'
+        if not isinstance(x, pd.DataFrame):
+            raise TypeError(
+                "This distance can be used only if input is a row of a pandas dataframe at the moment."
+            )
+
+        if continuous_distance is None:
+            continuous_distance = self.distance_metric
 
         if not isinstance(y, pd.DataFrame):
             y = pd.DataFrame(y, columns=x.columns.tolist())
@@ -107,61 +171,66 @@ class CERTIFAI:
             cat_distance = 1
 
         if len(con) > 0:
-            if continuous_distance == 'L1':
+            if continuous_distance == "L1":
                 con_distance = L1(x[con], y[con])
             else:
                 con_distance = L2(x[con], y[con])
         else:
             con_distance = 1
 
-        return len(con) / x.shape[-1] * con_distance + len(cat) / x.shape[-1] * cat_distance
+        return (
+            len(con) / x.shape[-1] * con_distance
+            + len(cat) / x.shape[-1] * cat_distance
+        )
 
-    def set_distance(self, kind='automatic', x=None):
+    def set_distance(
+        self,
+        kind: str = "automatic",
+        x: pd.DataFrame | np.ndarray | None = None,
+    ) -> None:
         """Set the distance function to be used in counterfactual generation.
-        The distance function can either be manually chosen by passing the
-        relative value to the kind argument or it can be inferred by passing the
-        'automatic' value.
 
-        Arguments:
-            Inputs:
-                kind (string): possible values, representing the different
-                distance functions are: 'automatic', 'L1', 'L2' and 'euclidean' (same as L2)
+        Parameters
+        ----------
+        kind : str
+            One of ``"automatic"``, ``"L1"``, ``"L2"``, ``"euclidean"``
+            (same as L2), or ``"tab_distance"``.
+        x : pandas.DataFrame or numpy.ndarray, optional
+            Training data used by ``"automatic"`` to decide whether to use
+            the tabular distance (when categorical columns are present) or
+            a simple pairwise distance.
+        """
+        _metric_fn = L1 if self.distance_metric == "L1" else L2
 
-                x (numpy.ndarray or pandas.DataFrame): training set or a sample from it on the basis
-                of which the function will decide what distance function to use if kind=='automatic'.
-                If the training set is a .csv file then
-                the function more suitable for tabular data will be used, otherwise the function
-                will backoff to using L1 norm distance.
-
-        Outputs:
-            None, set the distance attribute as described above."""
-
-        if kind == 'automatic':
-            assert x is not None or self.tab_dataset is not None, 'For using automatic distance assignment,\
-                the input data needs to be provided or the class needs to be initialised with a csv file!'
+        if kind == "automatic":
+            if x is None and self.tab_dataset is None:
+                raise ValueError(
+                    "For using automatic distance assignment,"
+                    " the input data needs to be provided or the class needs to be initialised with a csv file!"
+                )
 
             if x is None:
                 x = self.tab_dataset
             else:
-                con, cat = self.get_con_cat_columns(x)
+                _con, cat = self.get_con_cat_columns(x)
                 if len(cat) > 0:
                     self.distance = self.tabular_distance
                 else:
-                    self.distance = L1
+                    self.distance = _metric_fn
 
-        elif kind == 'tab_distance':
+        elif kind == "tab_distance":
             self.distance = self.tabular_distance
-        elif kind == 'L1':
+        elif kind == "L1":
             self.distance = L1
-        elif kind == 'L2':
-            self.distance = L2
-        elif kind == 'euclidean':
+        elif kind == "L2" or kind == "euclidean":
             self.distance = L2
         else:
-            raise ValueError('Distance function specified not recognised:\
-                             use one of automatic, L1, L2 or euclidean.')
+            raise ValueError(
+                "Distance function specified not recognised:"
+                " use one of automatic, L1, L2 or euclidean."
+            )
 
-    def set_population(self, x=None):
+    def set_population(self, x: pd.DataFrame | np.ndarray | None = None) -> None:
         """Set the population limit (i.e. number of counterfactuals created at each generation).
         following the original paper, we define the maximum population as the minum between the squared number of features
         to be generated and 30000.
@@ -175,8 +244,11 @@ class CERTIFAI:
         """
 
         if x is None:
-            assert self.tab_dataset is not None, 'If input is not provided, the class needs to be instatiated\
-                with an associated csv file, otherwise there is no input data for inferring population size.'
+            if self.tab_dataset is None:
+                raise ValueError(
+                    "If input is not provided, the class needs to be instantiated"
+                    " with an associated csv file, otherwise there is no input data for inferring population size."
+                )
 
             x = self.tab_dataset
 
@@ -185,8 +257,12 @@ class CERTIFAI:
         else:
             self.Population = min(x.shape[-1] ** 2, 30000)
 
-    def set_constraints(self, x=None, fixed=None):
-        '''Set the list of constraints for each input feature, whereas
+    def set_constraints(
+        self,
+        x: pd.DataFrame | np.ndarray | None = None,
+        fixed: list[str | int] | None = None,
+    ) -> None:
+        """Set the list of constraints for each input feature, whereas
         each constraint consist in the minimum and maximum value for
         the given continuous feature. If a categorical feature is encountered,
         then the number of unique categories is appended to the list instead.
@@ -204,7 +280,7 @@ class CERTIFAI:
             Outputs:
                 None, an attribute 'constraints' is created for the class, where
                 the constraints are stored.
-            '''
+        """
 
         fixed_feats = set() if fixed is None else set(fixed)
 
@@ -224,13 +300,16 @@ class CERTIFAI:
                     # Placeholder if the feature needs to be kept fixed in generating counterfactuals
                     self.constraints.append(i)
                 # Via a dataframe is also possible to constran categorical fatures (not supported for numpy array)
-                elif x.loc[:, i].dtype == 'O':
+                elif x.loc[:, i].dtype == "O":
                     self.constraints.append((0, len(pd.unique(x.loc[:, i]))))
                 else:
                     self.constraints.append((min(x.loc[:, i]), max(x.loc[:, i])))
         else:
-            assert x is not None, 'A numpy array should be provided to get min-max values of each column,\
-                or, alternatively, a .csv file needs to be supplied when instatiating the CERTIFAI class'
+            if x is None:
+                raise ValueError(
+                    "A numpy array should be provided to get min-max values of each column,"
+                    " or, alternatively, a .csv file needs to be supplied when instantiating the CERTIFAI class"
+                )
 
             for i in range(x.shape[1]):
                 if i in fixed_feats:
@@ -239,10 +318,12 @@ class CERTIFAI:
                 else:
                     self.constraints.append((min(x[:, i]), max(x[:, i])))
         if self.verbose:
-            print(f'Constraints have been set for the input data.{self.constraints}')
+            logger.info("Constraints have been set for the input data: %s", self.constraints)
 
-    def generate_prediction(self, model, model_input, model_type="torch", classification=False):
-        '''Function to output prediction from a deep learning or machine learning model.
+    def generate_prediction(
+        self, model, model_input, model_type="torch", classification=False
+    ):
+        """Function to output prediction from a deep learning or machine learning model.
 
         Arguments:
             Inputs:
@@ -256,7 +337,7 @@ class CERTIFAI:
 
             Output:
                 prediction (numpy.ndarray): the array containing the predicted values.
-        '''
+        """
         if classification:
             if model_type == "torch":
                 torch = importlib.import_module("torch")
@@ -271,17 +352,15 @@ class CERTIFAI:
                 torch = importlib.import_module("torch")
                 with torch.no_grad():
                     prediction = model(model_input).numpy()
-            elif model_type == "tf":
-                prediction = model.predict(model_input)
-            elif model_type == "sklearn":
+            elif model_type == "tf" or model_type == "sklearn":
                 prediction = model.predict(model_input)
 
         return prediction
 
-    def generate_counterfacts_list_dictionary(self, counterfacts_list,
-                                              distances, fitness_dict,
-                                              retain_k, start=0):
-        '''Function to generate and trim at the same time the list containing
+    def generate_counterfacts_list_dictionary(
+        self, counterfacts_list, distances, fitness_dict, retain_k, start=0
+    ):
+        """Function to generate and trim at the same time the list containing
         the counterfactuals and a dictionary having fitness score
         for each counterfactual index in the list.
 
@@ -307,23 +386,21 @@ class CERTIFAI:
                 and having length=retain_k
 
                 fitness_dict (dict): dictionary of fitness scores stored
-                by the relative counterfactual index.'''
+                by the relative counterfactual index."""
 
         gen_dict = {i: distance for i, distance in enumerate(distances)}
         gen_dict = {k: v for k, v in sorted(gen_dict.items(), key=lambda item: item[1])}
         selected_counterfacts = []
 
-        k = 0
-        for key, value in gen_dict.items():
+        for k, (key, value) in enumerate(gen_dict.items()):
             if k == retain_k:
                 break
             selected_counterfacts.append(counterfacts_list[key])
             fitness_dict[start + k] = value
-            k += 1
         return selected_counterfacts, fitness_dict
 
     def generate_cats_ids(self, dataset=None, cat=None):
-        '''Generate the unique categorical values of the relative features
+        """Generate the unique categorical values of the relative features
         in the dataset.
 
         Arguments:
@@ -343,32 +420,37 @@ class CERTIFAI:
             cat_ids (list): a list of tuples containing the unique categorical values
             for each categorical feature in the dataset, their number and the relative
             column index.
-        '''
+        """
         if dataset is None:
-            assert self.tab_dataset is not None, 'If the dataset is not provided\
-            to the function, a csv needs to have been provided when instatiating the class'
+            if self.tab_dataset is None:
+                raise ValueError(
+                    "If the dataset is not provided to the function,"
+                    " a csv needs to have been provided when instantiating the class"
+                )
 
             dataset = self.tab_dataset
 
         if cat is None:
-            con, cat = self.get_con_cat_columns(dataset)
+            _con, cat = self.get_con_cat_columns(dataset)
 
         cat_ids = []
         for index, key in enumerate(dataset):
             if key in set(cat):
-                cat_ids.append((index,
-                                len(pd.unique(dataset[key])),
-                                pd.unique(dataset[key])))
+                cat_ids.append(
+                    (index, len(pd.unique(dataset[key])), pd.unique(dataset[key]))
+                )
         return cat_ids
 
-    def generate_initial_candidates_tab(self,
-                                sample,
-                                normalisation=None,
-                                constrained=True,
-                                has_cat=False,
-                                cat_ids=None,
-                                img=False):
-        '''Function to generate the random (constrained or unconstrained)
+    def generate_initial_candidates_tab(
+        self,
+        sample,
+        normalisation=None,
+        constrained=True,
+        has_cat=False,
+        cat_ids=None,
+        img=False,
+    ):
+        """Function to generate the random (constrained or unconstrained)
         candidates for counterfactual generation if the input is a pandas
         dataframe (i.e. tabular data).
 
@@ -400,7 +482,7 @@ class CERTIFAI:
 
                 distances (numpy.ndarray): an array of distances of the candidates
                 from the current input sample.
-                '''
+        """
 
         nfeats = sample.shape[-1]
 
@@ -411,31 +493,48 @@ class CERTIFAI:
                 for constraint in self.constraints:
                     if not isinstance(constraint, tuple):
                         # For fixed feature, repeat its value to match the population size
-                        temp.append(np.full((self.Population, 1), sample.loc[:, constraint].values))
+                        temp.append(
+                            np.full(
+                                (self.Population, 1), sample.loc[:, constraint].values
+                            )
+                        )
                     else:
-                        #Generate random candidates
-                        temp.append(np.random.randint(constraint[0] * 100, (constraint[1] + 1) * 100,
-                                                      size=(self.Population, 1)) / 100)
+                        # Generate random candidates
+                        temp.append(
+                            np.random.randint(
+                                constraint[0] * 100,
+                                (constraint[1] + 1) * 100,
+                                size=(self.Population, 1),
+                            )
+                            / 100
+                        )
                 generation = np.concatenate(temp, axis=-1)
             else:
                 # If not constrained, we still don't want to generate values that are not totally unrealistic
                 low = min(sample)
                 high = max(sample)
-                #Generate random candidates
-                generation = np.random.randint(low, high + 1, size=(self.Population, nfeats))
-        elif normalisation == 'standard':
+                # Generate random candidates
+                generation = np.random.randint(
+                    low, high + 1, size=(self.Population, nfeats)
+                )
+        elif normalisation == "standard":
             generation = np.random.randn(self.Population, nfeats)
-        elif normalisation == 'max_scaler':
+        elif normalisation == "max_scaler":
             generation = np.random.rand(self.Population, nfeats)
         else:
-            raise ValueError('Normalisation option not recognised:\
+            raise ValueError(
+                'Normalisation option not recognised:\
                              choose one of "None", "standard" or\
-                                 "max_scaler".')
+                                 "max_scaler".'
+            )
 
         if has_cat:
-            assert cat_ids is not None, 'If categorical features are included in the dataset,\
-                the relative cat_ids (to be generated with the generate_cats_ids method) needs\
-                    to be provided to the function.'
+            if cat_ids is None:
+                raise ValueError(
+                    "If categorical features are included in the dataset,"
+                    " the relative cat_ids (to be generated with the generate_cats_ids method)"
+                    " needs to be provided to the function."
+                )
             generation = pd.DataFrame(generation, columns=sample.columns.tolist())
 
             for idx, ncat, cat_value in cat_ids:
@@ -444,7 +543,6 @@ class CERTIFAI:
                 generation.iloc[:, idx] = random_cats
 
             distances = self.distance(sample, generation)[0]
-            generation = generation
         else:
             distances = self.distance(sample, generation)[0]
             generation = generation.tolist()
@@ -456,7 +554,7 @@ class CERTIFAI:
         return generation.values.tolist(), distances
 
     def mutate(self, counterfacts_list):
-        '''Function to perform the mutation step from the original paper
+        """Function to perform the mutation step from the original paper
 
         Arguments:
             Input:
@@ -465,42 +563,41 @@ class CERTIFAI:
 
             Output:
                 mutated_counterfacts (numpy.ndarray): the mutated candidate
-                counterfactuals.'''
+                counterfactuals."""
 
         nfeats = len(counterfacts_list[0])
 
         dtypes = [type(feat) for feat in counterfacts_list[0]]
 
-        counterfacts_df = pd.DataFrame(counterfacts_list)
+        counterfacts_arr = np.array(counterfacts_list, dtype=object)
 
         random_indeces = np.random.binomial(1, self.Pm, len(counterfacts_list))
 
         mutation_indeces = [index for index, i in enumerate(random_indeces) if i]
 
         for index in mutation_indeces:
-            mutation_features = np.random.randint(0, nfeats,
-                                                  size=np.random.randint(1, nfeats))
+            mutation_features = np.random.randint(
+                0, nfeats, size=np.random.randint(1, nfeats)
+            )
 
             for feat_ind in mutation_features:
-                if isinstance(counterfacts_df.iloc[0, feat_ind], str):
-                    counterfacts_df.iloc[index, feat_ind] = np.random.choice(
-                        np.unique(counterfacts_df.iloc[:, feat_ind]))
-
+                col = counterfacts_arr[:, feat_ind]
+                if isinstance(counterfacts_arr[0, feat_ind], str):
+                    counterfacts_arr[index, feat_ind] = np.random.choice(np.unique(col))
                 else:
-                    counterfacts_df.iloc[index, feat_ind] = (
-                            0.5 * (
-                            np.random.choice(counterfacts_df.iloc[:, feat_ind]) +
-                            np.random.choice(counterfacts_df.iloc[:, feat_ind])
+                    counterfacts_arr[index, feat_ind] = dtypes[feat_ind](
+                        0.5 * (np.random.choice(col) + np.random.choice(col))
                     )
-                    ).astype(counterfacts_df.dtypes[feat_ind])
 
-        for index, key in enumerate(counterfacts_df):
-            counterfacts_df[key] = counterfacts_df[key].astype(dtypes[index])
+        result = counterfacts_arr.tolist()
+        for row in result:
+            for i, dt in enumerate(dtypes):
+                row[i] = dt(row[i])
 
-        return counterfacts_df.values.tolist()
+        return result
 
     def crossover(self, counterfacts_list, return_df=False):
-        '''Function to perform the crossover step from the original paper
+        """Function to perform the crossover step from the original paper
 
         Arguments:
             Input:
@@ -509,7 +606,7 @@ class CERTIFAI:
 
             Output:
                 crossed_counterfacts (numpy.ndarray): the changed candidate
-                counterfactuals.'''
+                counterfactuals."""
 
         nfeats = len(counterfacts_list[0])
 
@@ -517,52 +614,56 @@ class CERTIFAI:
 
         mutation_indeces = [index for index, i in enumerate(random_indeces) if i]
 
-        counterfacts_df = pd.DataFrame(counterfacts_list)
+        counterfacts_arr = np.array(counterfacts_list, dtype=object)
 
         while mutation_indeces:
-
-            individual1 = mutation_indeces.pop(np.random.randint(0, len(mutation_indeces)))
+            individual1 = mutation_indeces.pop(
+                np.random.randint(0, len(mutation_indeces))
+            )
 
             if len(mutation_indeces) > 0:
-                individual2 = mutation_indeces.pop(np.random.randint(0, len(mutation_indeces)))
+                individual2 = mutation_indeces.pop(
+                    np.random.randint(0, len(mutation_indeces))
+                )
 
-                mutation_features = np.random.randint(0, nfeats,
-                                                      size=np.random.randint(1, nfeats))
+                mutation_features = np.random.randint(
+                    0, nfeats, size=np.random.randint(1, nfeats)
+                )
 
-                features1 = counterfacts_df.iloc[individual1, mutation_features]
-
-                features2 = counterfacts_df.iloc[individual2, mutation_features]
-
-                counterfacts_df.iloc[individual1, mutation_features] = features2
-
-                counterfacts_df.iloc[individual2, mutation_features] = features1
+                temp = counterfacts_arr[individual1, mutation_features].copy()
+                counterfacts_arr[individual1, mutation_features] = counterfacts_arr[
+                    individual2, mutation_features
+                ]
+                counterfacts_arr[individual2, mutation_features] = temp
 
         if return_df:
-            return counterfacts_df
+            return pd.DataFrame(counterfacts_arr)
 
-        return counterfacts_df.values.tolist()
+        return counterfacts_arr.tolist()
 
-    def fit(self,
-            model,
-            x=None,
-            model_input=None,
-            trained_with_columns=False,
-            target_name = "target",
-            model_type="torch",
-            classification=False,
-            target_lower=None,
-            target_upper=None,
-            generations=3,
-            distance='automatic',
-            constrained=True,
-            class_specific=None,
-            select_retain=1000,
-            gen_retain=500,
-            final_k=1,
-            normalisation=None,
-            fixed=None,
-            verbose=False):
-        '''Generate the counterfactuals for the defined dataset under the
+    def fit(
+        self,
+        model: Any,
+        x: pd.DataFrame | np.ndarray | None = None,
+        model_input: Any = None,
+        trained_with_columns: bool = False,
+        target_name: str = "target",
+        model_type: Literal["torch", "tf", "sklearn"] = "torch",
+        classification: bool = False,
+        target_lower: pd.Series | np.ndarray | None = None,
+        target_upper: pd.Series | np.ndarray | None = None,
+        generations: int = 3,
+        distance: str = "automatic",
+        constrained: bool = True,
+        class_specific: int | None = None,
+        select_retain: int = 1000,
+        gen_retain: int = 500,
+        final_k: int = 1,
+        normalisation: Literal["standard", "max_scaler"] | None = None,
+        fixed: list[str | int] | None = None,
+        verbose: bool = False,
+    ) -> None:
+        """Generate the counterfactuals for the defined dataset under the
         trained model.
 
         Arguments:
@@ -653,7 +754,7 @@ class CERTIFAI:
                 the result attribute of the instance with a list of tuples each
                 containing the original data sample, the generated  counterfactual(s)
                 for that data sample and their distance(s).
-        '''
+        """
 
         # Reset per-run state so repeated fit() calls don't use stale values
         self.predictions = None
@@ -663,20 +764,30 @@ class CERTIFAI:
         self.column_names = None
 
         if x is None:
-            assert self.tab_dataset is not None, 'Either an input is passed into the function or the class needs to be instantiated with a dataset.'
+            if self.tab_dataset is None:
+                raise ValueError(
+                    "Either an input is passed into the function or the class needs to be instantiated with a dataset."
+                )
             x = self.tab_dataset.copy()
         else:
             x = x.copy()
 
         if not classification:
             if (target_lower is not None) ^ (target_upper is not None):
-                raise ValueError("Provide BOTH target_lower and target_upper or neither.")
+                raise ValueError(
+                    "Provide BOTH target_lower and target_upper or neither."
+                )
             if target_lower is not None:
-                if not isinstance(target_lower, (pd.Series, np.ndarray)) \
-                        or not isinstance(target_upper, (pd.Series, np.ndarray)):
-                    raise TypeError("target_lower/upper must be pd.Series or 1-D numpy arrays.")
+                if not isinstance(
+                    target_lower, (pd.Series, np.ndarray)
+                ) or not isinstance(target_upper, (pd.Series, np.ndarray)):
+                    raise TypeError(
+                        "target_lower/upper must be pd.Series or 1-D numpy arrays."
+                    )
                 if len(target_lower) != len(x) or len(target_upper) != len(x):
-                    raise ValueError("target_lower/upper must have the same length as x.")
+                    raise ValueError(
+                        "target_lower/upper must have the same length as x."
+                    )
                 # make them quick to index later
                 target_lower = np.asarray(target_lower)
                 target_upper = np.asarray(target_upper)
@@ -687,24 +798,28 @@ class CERTIFAI:
             self.set_population(x)
         if self.distance is None:
             self.set_distance(distance, x)
+        if trained_with_columns:
+            if model_input is not None:
+                self.column_names = model_input.columns
+            elif isinstance(x, pd.DataFrame):
+                self.column_names = x.columns
+
         if model_input is None:
             model_input = self.result_to_input(x, model_type=model_type)
-        else:
-            if trained_with_columns:
-                self.column_names = model_input.columns
 
-        if model_type == "torch" and hasattr(model, 'eval'):
+        if model_type == "torch" and hasattr(model, "eval"):
             model.eval()
 
         if self.predictions is None:
-            self.predictions = self.generate_prediction(model, model_input, model_type=model_type, classification=classification)
+            self.predictions = self.generate_prediction(
+                model, model_input, model_type=model_type, classification=classification
+            )
         if len(x.shape) > 2:
             x = x.reshape(x.shape[0], -1)
 
-
         self.results = []
         if isinstance(x, pd.DataFrame):
-            con, cat = self.get_con_cat_columns(x)
+            _con, cat = self.get_con_cat_columns(x)
             has_cat = len(cat) > 0
             cat_ids = self.generate_cats_ids(x) if has_cat else None
         else:
@@ -717,33 +832,40 @@ class CERTIFAI:
         tot_samples = range(x.shape[0])
 
         for i in tot_samples:
-            #Get Instance to explain
-            sample = x.iloc[i:i + 1, :].copy()
+            # Get Instance to explain
+            sample = x.iloc[i : i + 1, :].copy()
             counterfacts = []
             counterfacts_fit = {}
 
             for g in range(generations):
-                generation, distances = self.generate_initial_candidates_tab(sample,
-                                                                     normalisation,
-                                                                     constrained,
-                                                                     has_cat,
-                                                                     cat_ids)
+                generation, distances = self.generate_initial_candidates_tab(
+                    sample, normalisation, constrained, has_cat, cat_ids
+                )
 
                 selected_generation, _ = self.generate_counterfacts_list_dictionary(
                     counterfacts_list=generation,
                     distances=distances,
                     fitness_dict={},
                     retain_k=select_retain,
-                    start=0)
+                    start=0,
+                )
 
-                #Generate Counterfactual Candidates
-                selected_generation = np.array(selected_generation) #Convert list of CEs to np.array
-                mutated_generation = self.mutate(selected_generation) #Mutate CEs
-                crossed_generation = self.crossover(mutated_generation, return_df=True) #Crossover CEs.
-                #Convert CEs to the Model's input format
-                gen_input = self.result_to_input(crossed_generation, model_type=model_type)
+                # Generate Counterfactual Candidates
+                selected_generation = np.array(
+                    selected_generation
+                )  # Convert list of CEs to np.array
+                mutated_generation = self.mutate(selected_generation)  # Mutate CEs
+                crossed_generation = self.crossover(
+                    mutated_generation, return_df=True
+                )  # Crossover CEs.
+                # Convert CEs to the Model's input format
+                gen_input = self.result_to_input(
+                    crossed_generation, model_type=model_type
+                )
                 # Get Counterfactual Predictions
-                counterfactual_predictions = self.generate_prediction(model, gen_input, model_type, classification)
+                counterfactual_predictions = self.generate_prediction(
+                    model, gen_input, model_type, classification
+                )
                 if classification or target_lower is None:  # keep legacy behaviour
                     valid_mask = counterfactual_predictions != self.predictions[i]
                 else:
@@ -752,39 +874,50 @@ class CERTIFAI:
                     valid_mask = np.squeeze(counterfactual_predictions) >= lb
                     valid_mask &= np.squeeze(counterfactual_predictions) <= ub
 
-
-                #final_generation = crossed_generation.loc[different_prediction]
+                # final_generation = crossed_generation.loc[different_prediction]
                 final_generation = crossed_generation.loc[valid_mask]
 
                 if not final_generation.empty:  # Check if final_generation is not empty
                     final_distances = self.distance(sample, final_generation)[0]
                     final_generation = final_generation.copy()
-                    final_generation['prediction_target'] = np.array(counterfactual_predictions)[valid_mask]
+                    final_generation["prediction_target"] = np.array(
+                        counterfactual_predictions
+                    )[valid_mask]
 
-                    final_generation, counterfacts_fit = self.generate_counterfacts_list_dictionary(
-                        counterfacts_list=final_generation.values.tolist(),
-                        distances=final_distances,
-                        fitness_dict=counterfacts_fit,
-                        retain_k=gen_retain,
-                        start=len(counterfacts_fit))
+                    final_generation, counterfacts_fit = (
+                        self.generate_counterfacts_list_dictionary(
+                            counterfacts_list=final_generation.values.tolist(),
+                            distances=final_distances,
+                            fitness_dict=counterfacts_fit,
+                            retain_k=gen_retain,
+                            start=len(counterfacts_fit),
+                        )
+                    )
 
                     counterfacts.extend(final_generation)
 
             if counterfacts:
-                counterfacts, fitness_dict = self.generate_counterfacts_list_dictionary(
-                    counterfacts_list=counterfacts,
-                    distances=list(counterfacts_fit.values()),
-                    fitness_dict={},
-                    retain_k=final_k,
-                    start=0)
+                counterfacts, _fitness_dict = (
+                    self.generate_counterfacts_list_dictionary(
+                        counterfacts_list=counterfacts,
+                        distances=list(counterfacts_fit.values()),
+                        fitness_dict={},
+                        retain_k=final_k,
+                        start=0,
+                    )
+                )
                 sample[target_name] = self.predictions[i]
                 # Split prediction_target (last element) from feature values
                 prediction_targets = [cf[-1] for cf in counterfacts]
                 counterfacts = [cf[:-1] for cf in counterfacts]
                 self.results.append((sample, counterfacts, prediction_targets))
 
-    def result_to_input(self, x, model_type="torch"):
-        '''Function to transform the raw input to the required format for the ML model.
+    def result_to_input(
+        self,
+        x: pd.DataFrame | np.ndarray,
+        model_type: Literal["torch", "tf", "sklearn"] = "torch",
+    ) -> Any:
+        """Function to transform the raw input to the required format for the ML model.
 
         Arguments:
             x (pandas.DataFrame or numpy.ndarray): The "raw" input to be transformed.
@@ -792,47 +925,47 @@ class CERTIFAI:
 
         Outputs:
             Transformed input as torch.tensor, numpy.ndarray, or pandas.DataFrame.
-        '''
+        """
 
         # Ensure the model_type is valid
         if model_type not in ["sklearn", "torch", "tf"]:
             raise ValueError("model_type must be one of ['sklearn', 'torch', 'tf']")
 
         if isinstance(x, pd.DataFrame):
-            x = x.copy()
-            model_input = x
-
-            # Apply transformations only if needed
             if model_type in ["torch", "tf"]:
-                con, cat = self.get_con_cat_columns(x)
+                x = x.copy()
+                _con, cat = self.get_con_cat_columns(x)
                 if len(cat) > 0:
                     for feature in cat:
                         enc = LabelEncoder()
                         x[feature] = enc.fit_transform(x[feature])
-                model_input = x.to_numpy()  # Convert DataFrame to NumPy array
+                model_input = x.to_numpy()
+            else:
+                model_input = x
 
         elif isinstance(x, np.ndarray):
-            model_input = x  # NumPy array remains unchanged
+            model_input = x
         else:
-            raise ValueError("The input x must be a pandas DataFrame or a numpy array")
+            raise TypeError("The input x must be a pandas DataFrame or a numpy array")
 
-        # Convert based on model type
         if model_type == "sklearn":
             if self.column_names is None:
                 if isinstance(model_input, pd.DataFrame):
-                    result = model_input.to_numpy()
-                    return result
+                    return model_input.to_numpy()
                 else:
                     return model_input
             else:
                 if isinstance(model_input, pd.DataFrame):
-                    model_input = model_input.copy()
-                    model_input.columns = self.column_names
-                    return model_input
+                    result = pd.DataFrame(
+                        model_input.to_numpy(), columns=self.column_names
+                    )
+                    return result
                 else:
                     return pd.DataFrame(data=model_input, columns=self.column_names)
         elif model_type == "torch":
             torch = importlib.import_module("torch")
-            return torch.tensor(model_input, dtype=torch.float32)  # Convert to PyTorch tensor
+            return torch.tensor(
+                model_input, dtype=torch.float32
+            )  # Convert to PyTorch tensor
         elif model_type == "tf":
             return model_input  # For TensorFlow, keep as NumPy array
